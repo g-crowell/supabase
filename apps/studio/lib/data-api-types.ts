@@ -23,3 +23,10 @@ export const isApiPrivilegeType = (value: string): value is ApiPrivilegeType => 
 }
 
 export type ApiPrivilegesByRole = Record<ApiAccessRole, ApiPrivilegeType[]>
+
+export const createDefaultDataApiPrivileges = (): ApiPrivilegesByRole => {
+  return {
+    anon: [...API_PRIVILEGE_TYPES],
+    authenticated: [...API_PRIVILEGE_TYPES],
+  }
+}

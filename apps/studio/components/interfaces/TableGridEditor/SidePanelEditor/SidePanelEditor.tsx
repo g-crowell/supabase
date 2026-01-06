@@ -4,6 +4,10 @@ import { isEmpty, isUndefined, noop } from 'lodash'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
+import { useTableApiAccessPrivilegesMutation } from '@/data/privileges/table-api-access-mutation'
+import { useDataApiGrantTogglesEnabled } from '@/hooks/misc/useDataApiGrantTogglesEnabled'
+import { createDefaultDataApiPrivileges, type ApiPrivilegesByRole } from '@/lib/data-api-types'
+import type { Prettify } from '@/lib/type-helpers'
 import { useParams } from 'common'
 import { type GeneratedPolicy } from 'components/interfaces/Auth/Policies/Policies.utils'
 import { databasePoliciesKeys } from 'data/database-policies/keys'
@@ -89,6 +93,12 @@ type SaveTableParamsExisting = SaveTableParamsBase & {
 }
 
 type SaveTablePayloadBase = {
+  /**
+   * Comment to set on the table
+   *
+   * `null` removes existing comment
+   * `undefined` leaves comment unchanged
+   */
   comment?: string | null
 }
 
@@ -106,15 +116,16 @@ type SaveTablePayloadExisting = SaveTablePayloadBase & {
   rls_enabled?: boolean
 }
 
-type SaveTableConfiguration = {
+type SaveTableConfiguration = Prettify<{
   tableId?: number
   importContent?: ImportContent
   isRLSEnabled: boolean
+  apiPrivileges?: ApiPrivilegesByRole
   isRealtimeEnabled: boolean
   isDuplicateRows: boolean
   existingForeignKeyRelations: ForeignKeyConstraint[]
   primaryKey?: Constraint
-}
+}>
 
 export interface SidePanelEditorProps {
   editable?: boolean
@@ -142,6 +153,8 @@ export const SidePanelEditor = ({
   const { data: project } = useSelectedProjectQuery()
   const { data: org } = useSelectedOrganizationQuery()
   const getImpersonatedRoleState = useGetImpersonatedRoleState()
+
+  const isApiGrantTogglesEnabled = useDataApiGrantTogglesEnabled()
   const generatePoliciesFlag = usePHFlag<string>('tableCreateGeneratePolicies')
 
   const [isEdited, setIsEdited] = useState<boolean>(false)
@@ -178,6 +191,9 @@ export const SidePanelEditor = ({
   const { mutateAsync: createPublication } = useDatabasePublicationCreateMutation()
   const { mutateAsync: updatePublication } = useDatabasePublicationUpdateMutation({
     onError: () => {},
+  })
+  const { mutateAsync: updateApiPrivileges } = useTableApiAccessPrivilegesMutation({
+    onError: () => {}, // Errors handled inline
   })
 
   const isDuplicating = snap.sidePanel?.type === 'table' && snap.sidePanel.mode === 'duplicate'
@@ -480,6 +496,26 @@ export const SidePanelEditor = ({
     }
   }
 
+  const updateTableApiAccess = async (
+    table: RetrieveTableResult,
+    privileges: ApiPrivilegesByRole
+  ) => {
+    if (!project) return console.error('Project is required')
+
+    try {
+      await updateApiPrivileges({
+        projectRef: project.ref,
+        connectionString: project.connectionString ?? undefined,
+        relationId: table.id,
+        privileges,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : undefined
+      const toastDetail = message ? `: ${message}` : ''
+      toast.error(`Failed to update API access privileges for ${table.name}${toastDetail}`)
+    }
+  }
+
   const saveTable = async ({
     action,
     payload,
@@ -495,6 +531,7 @@ export const SidePanelEditor = ({
     const {
       importContent,
       isRLSEnabled,
+      apiPrivileges,
       isRealtimeEnabled,
       isDuplicateRows,
       existingForeignKeyRelations,
@@ -520,6 +557,11 @@ export const SidePanelEditor = ({
         })
 
         if (isRealtimeEnabled) await updateTableRealtime(table, true)
+
+        if (isApiGrantTogglesEnabled) {
+          const privilegesToSet = apiPrivileges ?? createDefaultDataApiPrivileges()
+          await updateTableApiAccess(table, privilegesToSet)
+        }
 
         // Invalidate queries for table creation
         await Promise.all([
@@ -577,6 +619,11 @@ export const SidePanelEditor = ({
         })
         if (isRealtimeEnabled) await updateTableRealtime(table, isRealtimeEnabled)
 
+        if (isApiGrantTogglesEnabled) {
+          const privilegesToSet = apiPrivileges ?? createDefaultDataApiPrivileges()
+          await updateTableApiAccess(table, privilegesToSet)
+        }
+
         await Promise.all([
           queryClient.invalidateQueries({
             queryKey: tableKeys.list(project?.ref, table.schema, includeColumns),
@@ -614,6 +661,9 @@ export const SidePanelEditor = ({
         }
         if (isTableLike(table)) {
           await updateTableRealtime(table, isRealtimeEnabled)
+          if (isApiGrantTogglesEnabled && apiPrivileges) {
+            await updateTableApiAccess(table, apiPrivileges)
+          }
         }
 
         if (hasError) {
